@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Fruit Freshness Detector</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@latest"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            text-align: center;
+            padding: 20px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            max-width: 700px;
+            margin: 20px auto;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #7f8c8d;
+            margin-bottom: 25px;
+        }
+        #webcam {
+            width: 320px;
+            height: 240px;
+            object-fit: cover;
+            margin: 15px auto;
+            display: block;
+            border: 4px solid #3498db;
+            border-radius: 15px;
+            transform: scaleX(-1); /* Mirror the webcam view */
+        }
+        canvas {
+            display: none;
+        }
+        .button-group {
+            margin: 20px 0;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            padding: 14px 28px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            margin: 10px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(50, 50, 93, 0.11);
+        }
+        button:hover {
+            background-color: #2980b9;
+            transform: translateY(-2px);
+            box-shadow: 0 7px 14px rgba(50, 50, 93, 0.1);
+        }
+        button:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        #result {
+            font-size: 22px;
+            font-weight: bold;
+            margin: 25px 0;
+            padding: 20px;
+            border-radius: 12px;
+            background-color: #f8f9fa;
+            border-left: 5px solid #3498db;
+        }
+        .fresh { color: #27ae60; }
+        .rotten { color: #c0392b; }
+        .unknown { color: #7f8c8d; }
+        
+        .fruit-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .fruit-card {
+            padding: 15px;
+            border-radius: 10px;
+            background-color: #f8f9fa;
+            border: 2px solid #e9ecef;
+        }
+        
+        .fruit-card.fresh {
+            border-color: #27ae60;
+            background-color: rgba(39, 174, 96, 0.1);
+        }
+        
+        .fruit-card.rotten {
+            border-color: #c0392b;
+            background-color: rgba(192, 57, 43, 0.1);
+        }
+        
+        .confidence {
+            font-size: 14px;
+            color: #7f8c8d;
+            margin-top: 8px;
+        }
+        
+        .loading {
+            color: #3498db;
+            font-style: italic;
+        }
+        
+        .instructions {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🍎🍌🍓 Multi-Fruit Freshness Detector</h1>
+        <p class="subtitle">Using AI and Computer Vision to detect fruit freshness</p>
+        
+        <div class="instructions">
+            <strong>How to use:</strong><br>
+            1. Click "Start Webcam" and allow camera permission<br>
+            2. Point at a single fruit (Apple, Banana, or Strawberry)<br>
+            3. Click "Analyze Freshness"!<br>
+            <small>Works best with good lighting and a clean background.</small>
+        </div>
+
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="snapshot" width="224" height="224"></canvas>
+
+        <div class="button-group">
+            <button id="startButton">Start Webcam</button>
+            <button id="predictButton" disabled>Analyze Freshness</button>
+        </div>
+
+        <div id="result">Ready to analyze... 👆</div>
+        
+        <div class="fruit-grid" id="fruitGrid">
+            <div class="fruit-card unknown" id="appleCard">
+                <div>🍎 Apple</div>
+                <div class="status">-</div>
+                <div class="confidence">-</div>
+            </div>
+            <div class="fruit-card unknown" id="bananaCard">
+                <div>🍌 Banana</div>
+                <div class="status">-</div>
+                <div class="confidence">-</div>
+            </div>
+            <div class="fruit-card unknown" id="strawberryCard">
+                <div>🍓 Strawberry</div>
+                <div class="status">-</div>
+                <div class="confidence">-</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Get all the HTML elements we need to control
+        const webcamElement = document.getElementById('webcam');
+        const snapshotCanvas = document.getElementById('snapshot');
+        const startButton = document.getElementById('startButton');
+        const predictButton = document.getElementById('predictButton');
+        const resultDiv = document.getElementById('result');
+        
+        // Fruit cards
+        const appleCard = document.getElementById('appleCard');
+        const bananaCard = document.getElementById('bananaCard');
+        const strawberryCard = document.getElementById('strawberryCard');
+
+        // We will store our ML model and the webcam stream here
+        let net;
+        let webcamStream;
+
+        // Function to start the webcam
+        async function startWebcam() {
+            try {
+                resultDiv.innerHTML = '<span class="loading">Starting webcam...</span>';
+                // Get the video stream from the user's webcam
+                webcamStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    }, 
+                    audio: false 
+                });
+                webcamElement.srcObject = webcamStream;
+                predictButton.disabled = false;
+                resultDiv.innerHTML = '✅ Webcam ready! Point at a fruit and click "Analyze Freshness"';
+            } catch (error) {
+                console.error('Error accessing webcam:', error);
+                resultDiv.innerHTML = '❌ Error accessing webcam. Please check permissions and try again.';
+            }
+        }
+
+        // Function to analyze the image
+        async function analyzeImage() {
+            resultDiv.innerHTML = '<span class="loading">Analyzing... Please wait.</span>';
+            predictButton.disabled = true;
+
+            // Create a hidden canvas and draw the current video frame onto it
+            const context = snapshotCanvas.getContext('2d');
+            context.drawImage(webcamElement, 0, 0, snapshotCanvas.width, snapshotCanvas.height);
+
+            // Load the MobileNet model if not already loaded
+            if (!net) {
+                resultDiv.innerHTML = '<span class="loading">Loading AI Model for the first time... (may take 10-20 seconds)</span>';
+                net = await mobilenet.load();
+                resultDiv.innerHTML = '<span class="loading">Model loaded! Analyzing now...</span>';
+            }
+
+            try {
+                // Get predictions from the model
+                const predictions = await net.classify(snapshotCanvas);
+                
+                // Reset all cards
+                resetFruitCards();
+                
+                // Check for each fruit type in predictions
+                const detectedFruits = [];
+                
+                predictions.forEach(prediction => {
+                    const className = prediction.className.toLowerCase();
+                    const confidence = prediction.probability;
+                    
+                    if (className.includes('apple') || className.includes('granny smith')) {
+                        detectApple(context, confidence, detectedFruits);
+                    }
+                    else if (className.includes('banana')) {
+                        detectBanana(context, confidence, detectedFruits);
+                    }
+                    else if (className.includes('strawberry') || className.includes('berry')) {
+                        detectStrawberry(context, confidence, detectedFruits);
+                    }
+                });
+
+                if (detectedFruits.length === 0) {
+                    resultDiv.innerHTML = '❌ No supported fruit detected. Try getting closer to an apple, banana, or strawberry.';
+                    resultDiv.innerHTML += '<br><small>Top prediction: ' + predictions[0]?.className + '</small>';
+                } else {
+                    resultDiv.innerHTML = `✅ Analysis complete! Detected: ${detectedFruits.join(', ')}`;
+                }
+
+            } catch (error) {
+                console.error('Error during analysis:', error);
+                resultDiv.innerHTML = '❌ An error occurred during analysis. Please try again.';
+            }
+            
+            predictButton.disabled = false;
+        }
+
+        function resetFruitCards() {
+            [appleCard, bananaCard, strawberryCard].forEach(card => {
+                card.className = 'fruit-card unknown';
+                card.querySelector('.status').textContent = '-';
+                card.querySelector('.confidence').textContent = '-';
+            });
+        }
+
+        function detectApple(context, confidence, detectedFruits) {
+            detectedFruits.push('Apple');
+            const color = getAverageColor(context, 10);
+            const isFresh = !isBrownish(color) && !isDark(color);
+            
+            appleCard.className = isFresh ? 'fruit-card fresh' : 'fruit-card rotten';
+            appleCard.querySelector('.status').textContent = isFresh ? 'Fresh ✅' : 'Rotten ❌';
+            appleCard.querySelector('.confidence').textContent = `Confidence: ${Math.round(confidence * 100)}%`;
+        }
+
+        function detectBanana(context, confidence, detectedFruits) {
+            detectedFruits.push('Banana');
+            const color = getAverageColor(context, 10);
+            // Bananas are fresh when yellow/green, rotten when brown/black
+            const isFresh = !isBrownish(color) && !isDark(color) && color.avgGreen > 100;
+            
+            bananaCard.className = isFresh ? 'fruit-card fresh' : 'fruit-card rotten';
+            bananaCard.querySelector('.status').textContent = isFresh ? 'Fresh ✅' : 'Rotten ❌';
+            bananaCard.querySelector('.confidence').textContent = `Confidence: ${Math.round(confidence * 100)}%`;
+        }
+
+        function detectStrawberry(context, confidence, detectedFruits) {
+            detectedFruits.push('Strawberry');
+            const color = getAverageColor(context, 10);
+            // Strawberries are fresh when bright red, rotten when dark/moldy
+            const isFresh = color.avgRed > 150 && color.avgGreen < 100 && color.avgBlue < 100 && !isDark(color);
+            
+            strawberryCard.className = isFresh ? 'fruit-card fresh' : 'fruit-card rotten';
+            strawberryCard.querySelector('.status').textContent = isFresh ? 'Fresh ✅' : 'Rotten ❌';
+            strawberryCard.querySelector('.confidence').textContent = `Confidence: ${Math.round(confidence * 100)}%`;
+        }
+
+        function getAverageColor(context, gridSize) {
+            const width = snapshotCanvas.width;
+            const height = snapshotCanvas.height;
+            let totalRed = 0, totalGreen = 0, totalBlue = 0;
+            let sampleCount = 0;
+
+            for (let x = width/2 - gridSize; x < width/2 + gridSize; x += 2) {
+                for (let y = height/2 - gridSize; y < height/2 + gridSize; y += 2) {
+                    const pixelData = context.getImageData(x, y, 1, 1).data;
+                    totalRed += pixelData[0];
+                    totalGreen += pixelData[1];
+                    totalBlue += pixelData[2];
+                    sampleCount++;
+                }
+            }
+
+            return {
+                avgRed: totalRed / sampleCount,
+                avgGreen: totalGreen / sampleCount,
+                avgBlue: totalBlue / sampleCount
+            };
+        }
+
+        function isBrownish(color) {
+            return (color.avgRed > 80 && color.avgGreen > 60 && color.avgBlue > 40) && 
+                   (Math.abs(color.avgRed - color.avgGreen) < 50) && 
+                   (Math.abs(color.avgGreen - color.avgBlue) < 30);
+        }
+
+        function isDark(color) {
+            return (color.avgRed < 100 && color.avgGreen < 100 && color.avgBlue < 100);
+        }
+
+        // Add event listeners to the buttons
+        startButton.addEventListener('click', startWebcam);
+        predictButton.addEventListener('click', analyzeImage);
+    </script>
+</body>
+</html>
